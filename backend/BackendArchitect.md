@@ -12,7 +12,7 @@ Run through this list before accepting any backend change:
 
 - [ ] **Schema changes go through a migration** in `backend/supabase/migrations/`. SQLAlchemy never creates or alters tables.
 - [ ] **Every new table** has: client-generated `uuid` PK, `owner_id`, `created_at`, `updated_at`, `client_updated_at`, `deleted_at`, an RLS policy, and an index on `owner_id`.
-- [ ] **Every new table that devices need** is added to `backend/powersync/sync-rules.yaml` and to the frontend PowerSync schema (tell the frontend side — see `frontend/FrontendArchitect.md`).
+- [ ] **Every new table that devices need** is added to: `backend/powersync/sync-rules.yaml`, the `powersync` publication (`alter publication powersync add table ...` in the migration), `app/services/registry.py` (if devices write it), and the frontend PowerSync schema (see `frontend/FrontendArchitect.md`).
 - [ ] **Every write is an idempotent upsert by `id`.** Retrying the same request must never create a duplicate.
 - [ ] **Every query is scoped to the current user** (RLS via `set local` claims *and* `owner_id` filter in code).
 - [ ] **Business logic lives in `services/`**, not in routers and not in the LangGraph nodes. Typed and voice entries call the *same* service function.
@@ -85,9 +85,11 @@ backend/
 │   ├── main.py                  # FastAPI app factory, router registration, lifespan (DB pool, checkpointer)
 │   ├── config.py                # pydantic-settings Settings; the ONLY place env vars are read
 │   ├── db.py                    # async engine, session factory, `user_session()` that sets RLS claims
+│   ├── errors.py                # AppError + handlers → {"error": {...}} responses
 │   ├── api/                     # FastAPI routers — thin: parse, call service, return
 │   │   ├── deps.py              # get_current_user, get_db
 │   │   ├── health.py
+│   │   ├── me.py                # GET /v1/me
 │   │   ├── sync.py              # POST /v1/sync/upload  (PowerSync upload queue)
 │   │   ├── voice.py             # /v1/voice/...         (assistant)
 │   │   └── records.py           # complex reads (e.g. colony history) if needed
@@ -103,7 +105,8 @@ backend/
 │   │   ├── harvests.py
 │   │   ├── inventory.py
 │   │   ├── notes.py
-│   │   ├── upsert.py            # generic idempotent LWW upsert + conflict logging
+│   │   ├── registry.py          # which tables devices may write, validation model, hooks
+│   │   ├── sync.py              # generic idempotent LWW upsert + conflict logging
 │   │   └── resolve.py           # "hive 12" → colony id, product → inventory item (plain code)
 │   └── assistant/
 │       ├── graph.py             # LangGraph StateGraph definition
@@ -157,7 +160,7 @@ Domain tables (columns beyond the common ones):
 
 | Table | Key columns |
 | --- | --- |
-| `profiles` | `id = auth.users.id`, `display_name`, `locale` (speech/UI language), `default_units` |
+| `profiles` | `id = auth.users.id`, `owner_id` (generated = `id`), `display_name`, `locale` (speech/UI language). Created by a trigger on sign-up; devices may only PUT/PATCH their own. |
 | `apiaries` | `name`, `location geography(Point,4326)`, `kind` (`permanent` / `temporary`), `notes` |
 | `colonies` | `label` (e.g. "Hive 12"), `number int` (for voice matching), `mode` (`stationary` / `migratory`), `status` (`active` / `dead` / `sold` / `merged`), `queen_year`, `notes` |
 | `colony_placements` | `colony_id`, `apiary_id`, `started_at`, `ended_at` (null = current). **Partial unique index:** one open placement per colony (`where ended_at is null and deleted_at is null`). |
@@ -416,18 +419,32 @@ When offline, the device saves a `voice_notes` row (`status = pending`). After r
 
 Rule: **no new service function without a test**; no new table without an RLS test.
 
+How to run:
+- `uv run pytest` — unit tests only (no database).
+- `uv run pytest --db` — also runs `tests/db/` against `DATABASE_URL`. It creates throwaway `b4y-test-*@example.com` users in `auth.users` and deletes them (and, by cascade, all their rows) afterwards. Takes ~2 minutes over the pooler.
+
 ---
 
-## 11. Local development & environments
+## 11. Local development, deployment & environments
 
-1. `cd backend && supabase start` — local Postgres, Auth, Storage (Docker).
-2. `supabase db reset` — apply all migrations + `seed.sql`.
-3. `uv sync` then `uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`.
+**Default setup: hosted Supabase, no Docker.** Docker is only needed to run Supabase on your own machine (`supabase start`); it's optional.
+
+1. Create a hosted Supabase project (dev). Install the Supabase CLI (`npm i -g supabase` or `npx supabase`).
+2. Once: `npx supabase login`. Then `cd backend && npx supabase link --project-ref <ref>` and `npx supabase db push --remote` — applies `supabase/migrations/` to the hosted project. (CLI 3.x targets the local Docker stack unless you pass `--remote`.)
+3. `cp .env.example .env`, fill in values. `uv sync` then `uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`.
    Use `0.0.0.0` so a physical phone on the same network can reach it via the computer's LAN IP.
-4. PowerSync: hosted instance (or self-hosted Docker) pointed at the Supabase DB, Supabase Auth as JWT source.
-5. Hosted Supabase project for phone testing — note free-tier projects pause after ~1 week idle.
+4. `uv run pytest`, `uv run ruff check .`, `uv run mypy app` must pass before committing.
+5. PowerSync: hosted instance pointed at the Supabase DB (publication `powersync`), Supabase Auth as JWT source, rules from `powersync/sync-rules.yaml`.
+6. Free-tier Supabase projects pause after ~1 week idle.
 
-Environments: `local` (Docker Supabase), `dev/staging` (hosted), `prod` (later). Config differs only by env vars.
+Optional local stack: install Docker, `npx supabase start`, `npx supabase db reset`.
+
+**Deployment: Vercel.** FastAPI runs as a Vercel Python serverless function (project Root Directory = `backend`, entrypoint `app/main.py:app`). Because functions are short-lived:
+- `DATABASE_URL` = Supabase **pooler** URL (port 6543, transaction mode) and `DB_SERVERLESS=true` → `NullPool`, prepared statements off (see `app/db.py`).
+- Keep requests short. The voice assistant (phase 4) must fit Vercel's function time limit; LangGraph state lives in Postgres, so each request is independent.
+- Env vars are set in the Vercel project settings, never committed.
+
+Environments: `dev` (hosted Supabase + Vercel preview), `prod` (later). Config differs only by env vars.
 
 ---
 
@@ -467,3 +484,9 @@ Add a line whenever a rule above changes or a non-obvious choice is made.
 | 2026-11-19 | Soft deletes + client-generated UUIDs + LWW on `client_updated_at` with conflict log. | Offline-first sync needs tombstones and idempotent retries. |
 | 2026-11-19 | FastAPI runs queries with `set local role authenticated` + JWT claims (RLS applies) *and* explicit `owner_id` filters. | Defense in depth. |
 | 2026-11-19 | Apiary location synced as `lat`/`lng`, stored as PostGIS `geography`. | SQLite has no PostGIS. |
+| 2026-11-19 | Deploy FastAPI on Vercel; develop against hosted Supabase (Docker optional). | User's choice; no Docker needed. Requires pooler URL + `DB_SERVERLESS=true`. |
+| 2026-11-19 | Enum-like columns are `text` + `check` constraints, not Postgres enums. | Easier to evolve via migrations; maps 1:1 to SQLite text. |
+| 2026-11-19 | Server resolves overlapping open placements (`services/colonies.py`): a later placement wins; server-side closes bump `client_updated_at` to now. | Two offline devices can move the same colony. |
+| 2026-11-19 | `sync_conflicts` ids are server-generated; the table is not synced to devices yet. | Written by the API, not by devices. |
+| 2026-11-19 | LangChain/LangGraph deps are added in phase 4, not now. | Don't build ahead of the phase; keeps the serverless bundle small. |
+| 2026-11-19 | `profiles.default_units` dropped for now. | Not needed until phase 2 forms; add with a migration then. |

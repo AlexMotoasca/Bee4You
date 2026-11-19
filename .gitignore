@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env files (keep the examples)
+.env
+.env.*
+!.env.example
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Vercel
+.vercel
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

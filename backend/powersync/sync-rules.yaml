@@ -1,0 +1,19 @@
+# Which rows each user's devices receive (downstream sync).
+# Writes go up through FastAPI (POST /v1/sync/upload), never through PowerSync directly.
+# Every table listed here must also be in the `powersync` publication (see migrations)
+# and in frontend/src/db/schema.ts with the same column names.
+# Soft-deleted rows ARE synced so devices learn about deletions.
+# Verify syntax against the PowerSync version in use before deploying.
+
+bucket_definitions:
+  user_data:
+    parameters: SELECT request.user_id() AS user_id
+    data:
+      - SELECT * FROM profiles WHERE id = bucket.user_id
+      - >-
+        SELECT id, owner_id, name, kind, notes,
+               st_y(location) AS lat, st_x(location) AS lng,
+               created_at, updated_at, client_updated_at, deleted_at
+        FROM apiaries WHERE owner_id = bucket.user_id
+      - SELECT * FROM colonies WHERE owner_id = bucket.user_id
+      - SELECT * FROM colony_placements WHERE owner_id = bucket.user_id

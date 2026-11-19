@@ -55,7 +55,7 @@ The app signs in with Supabase Auth and sends the same access token to FastAPI, 
 | Supabase Postgres, PostGIS | Hold the central records shared across a beekeeper’s devices, including apiary locations. |
 | Row Level Security | Ensure each user can only read and change their own apiaries, colonies, and records. |
 | Supabase Storage | Store hive photos and voice recordings. |
-| Supabase CLI migrations | Own the database schema. All table changes go through `supabase/migrations`. |
+| Supabase CLI migrations | Own the database schema. All table changes go through `backend/supabase/migrations`. |
 | PowerSync service | Stream server changes to each device according to sync rules. |
 | Python, FastAPI, Pydantic | Expose the API for uploads from the device queue, voice entries, and logic too complex for direct database access. Request and response models generate the OpenAPI docs. |
 | SQLAlchemy (async) | Query and write Postgres from FastAPI. It does not create or alter tables. |
@@ -120,44 +120,47 @@ On the first connected sign-in, PowerSync downloads the beekeeper’s apiaries a
 
 The Supabase dashboard covers record review on a larger screen during development. A separate web dashboard is not planned for now.
 
-## Proposed project structure
+## Project structure
 
 ```text
 bee4you/
-├── apps/
-│   └── mobile/
-│       └── src/
-│           ├── app/          # Expo Router screens and layouts
-│           ├── features/     # Apiaries, colonies, treatments, harvests, inventory
-│           ├── voice/        # Push-to-talk, speech recognition, read-back, haptics
-│           ├── db/           # PowerSync schema and local queries
-│           └── lib/          # Supabase client, API client, map config
+├── frontend/                     # Mobile app (React Native + Expo)
+│   ├── FrontendArchitect.md      # Rules and contracts for all frontend work
+│   └── src/
+│       ├── app/                  # Expo Router screens and layouts
+│       ├── features/             # Apiaries, colonies, treatments, harvests, inventory
+│       ├── voice/                # Push-to-talk, speech recognition, read-back, haptics
+│       ├── db/                   # PowerSync schema and local queries
+│       └── lib/                  # Supabase client, API client, map config
 ├── backend/
+│   ├── BackendArchitect.md       # Rules and contracts for all backend work
 │   ├── app/
-│   │   ├── api/              # FastAPI routers (uploads, voice, records)
-│   │   ├── auth/             # Supabase JWT verification
-│   │   ├── models/           # SQLAlchemy and Pydantic models
-│   │   ├── services/         # Domain logic shared by typed and voice entries
-│   │   └── assistant/        # LangGraph graph, nodes, prompts, tools
+│   │   ├── api/                  # FastAPI routers (uploads, voice, records)
+│   │   ├── auth/                 # Supabase JWT verification
+│   │   ├── models/               # SQLAlchemy and Pydantic models
+│   │   ├── services/             # Domain logic shared by typed and voice entries
+│   │   └── assistant/            # LangGraph graph, nodes, prompts, tools
 │   ├── tests/
-│   └── pyproject.toml
-├── supabase/
-│   ├── migrations/           # Schema, RLS policies, PostGIS
-│   └── seed.sql
-├── powersync/
-│   └── sync-rules.yaml       # Which rows each user's devices receive
+│   ├── pyproject.toml
+│   ├── supabase/
+│   │   ├── migrations/           # Schema, RLS policies, PostGIS
+│   │   └── seed.sql
+│   └── powersync/
+│       └── sync-rules.yaml       # Which rows each user's devices receive
 └── README.md
 ```
+
+Before working on either side, read its architect file: [frontend/FrontendArchitect.md](frontend/FrontendArchitect.md) or [backend/BackendArchitect.md](backend/BackendArchitect.md). Each one starts with a checklist for reviewing every change.
 
 ## Development setup plan
 
 These steps are for scaffolding the project. Choose compatible versions and commit the lockfiles when the first projects are created.
 
-1. **Prepare the tools.** Install Node.js LTS, Python 3.12+ with `uv` (or another environment manager), the Supabase CLI, and Docker for the local Supabase stack. Have an Android or iOS device for field testing. Local native builds require Android Studio for Android or macOS with Xcode for iOS.
-2. **Create the Supabase project.** Run `supabase init` and `supabase start` for local development, and create a hosted project for the phone to reach. Enable PostGIS, write the first migration with the core tables and RLS policies, and turn on the sign-in providers you need. Free-tier hosted projects pause after about a week without activity.
+1. **Prepare the tools.** Install Node.js LTS, Python 3.12+ with `uv` (or another environment manager), the Supabase CLI (Docker is optional, only for running Supabase locally; a hosted project works without it). Have an Android or iOS device for field testing. Local native builds require Android Studio for Android or macOS with Xcode for iOS.
+2. **Create the Supabase project.** From `backend/`, run `supabase init` and `supabase start` for local development, and create a hosted project for the phone to reach. Enable PostGIS, write the first migration with the core tables and RLS policies, and turn on the sign-in providers you need. Free-tier hosted projects pause after about a week without activity.
 3. **Set up PowerSync.** Create a PowerSync instance connected to the Supabase database, configure Supabase Auth as its JWT source, and write the first sync rules so each user receives only their own apiaries and colonies.
-4. **Create the backend.** Scaffold a FastAPI project with `fastapi`, `uvicorn`, `pydantic`, `sqlalchemy[asyncio]`, `asyncpg`, `pyjwt`, `langchain`, `langchain-anthropic`, `langgraph`, and `langgraph-checkpoint-postgres`. Configure `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET` (or the project’s JWKS URL), and `ANTHROPIC_API_KEY`. Keep these on the server only.
-5. **Create the mobile project.** Scaffold a TypeScript Expo app with Expo Router, then install the native dependencies: `npx expo install @maplibre/maplibre-react-native expo-speech-recognition expo-speech expo-haptics @powersync/react-native @supabase/supabase-js`. Configure NativeWind, build a development client, and set `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, `EXPO_PUBLIC_POWERSYNC_URL`, and `EXPO_PUBLIC_API_URL`. On a physical phone, `localhost` refers to the phone itself, so use your computer’s network address.
+4. **Create the backend.** In `backend/`, scaffold a FastAPI project with `fastapi`, `uvicorn`, `pydantic`, `sqlalchemy[asyncio]`, `asyncpg`, `pyjwt`, `langchain`, `langchain-anthropic`, `langgraph`, and `langgraph-checkpoint-postgres`. Configure `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET` (or the project’s JWKS URL), and `ANTHROPIC_API_KEY`. Keep these on the server only.
+5. **Create the mobile project.** In `frontend/`, scaffold a TypeScript Expo app with Expo Router, then install the native dependencies: `npx expo install @maplibre/maplibre-react-native expo-speech-recognition expo-speech expo-haptics @powersync/react-native @supabase/supabase-js`. Configure NativeWind, build a development client, and set `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, `EXPO_PUBLIC_POWERSYNC_URL`, and `EXPO_PUBLIC_API_URL`. On a physical phone, `localhost` refers to the phone itself, so use your computer’s network address.
 6. **Configure maps.** Create a MapTiler or Stadia Maps account, restrict the key to the app, and set the style URL in the mobile config.
 7. **Verify the first field workflow.** Sign in, download one apiary, and disable connectivity. Save a treatment, close and reopen the app, then reconnect. Check that the treatment stays visible locally and appears exactly once in Supabase.
 8. **Verify the first voice entry.** With a connection, say a treatment without the amount, answer the follow-up question, confirm, and check the saved record.

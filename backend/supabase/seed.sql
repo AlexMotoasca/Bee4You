@@ -1,0 +1,3 @@
+-- Local development seed data only. Never put real user data here.
+-- Records are owned by auth users; sign up in the app (or the Supabase dashboard) first,
+-- then add sample apiaries/colonies for that user from the app itself.
