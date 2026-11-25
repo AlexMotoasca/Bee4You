@@ -16,6 +16,10 @@ dependencies = [
     "python-multipart>=0.0.34",
 ]
 
+[tool.vercel]
+# Vercel (Root Directory = backend) runs this ASGI app as a Python function.
+entrypoint = "app.main:app"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

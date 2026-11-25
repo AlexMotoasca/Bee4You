@@ -157,3 +157,35 @@ def test_voice_note_from_device(user: CurrentUser) -> None:
     data = {"transcript": "Stupul 12, acid oxalic", "locale": "ro-RO", "client_updated_at": NOW}
     p = prepare_op(op("PUT", "voice_notes", data), user)
     assert p.values["status"] == "pending"
+
+
+def test_accepts_powersync_client_formats(user: CurrentUser) -> None:
+    """PowerSync gives the phone timestamptz as 'YYYY-MM-DD hh:mm:ss.sssZ', numeric as text
+    and booleans as 0/1; the phone uploads rows in that same shape."""
+    data = {
+        "colony_id": str(uuid.uuid4()),
+        "apiary_id": str(uuid.uuid4()),
+        "noted_at": "2026-11-25 09:30:00.000Z",
+        "queen_seen": 1,
+        "temperament": "calm",
+        "text": None,
+        "source": "manual",
+        "client_updated_at": "2026-11-25 09:30:00.123Z",
+        "deleted_at": None,
+        "owner_id": str(user.id),
+        "created_at": "2026-11-25 09:30:00.000Z",
+        "updated_at": "2026-11-25 09:30:00.000Z",
+    }
+    p = prepare_op(op("PUT", "colony_notes", data), user)
+    assert p.values["queen_seen"] is True
+    assert p.values["client_updated_at"].microsecond == 123000
+    t = {
+        "colony_id": str(uuid.uuid4()),
+        "apiary_id": str(uuid.uuid4()),
+        "product_name": "Acid oxalic",
+        "amount": "5.5",
+        "unit": "ml",
+        "treated_at": "2026-11-25 09:30:00.000Z",
+        "client_updated_at": "2026-11-25 09:30:00.000Z",
+    }
+    assert str(prepare_op(op("PUT", "treatments", t), user).values["amount"]) == "5.5"

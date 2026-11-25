@@ -147,7 +147,8 @@ bee4you/
 │   │   ├── migrations/           # Schema, RLS policies, PostGIS
 │   │   └── seed.sql
 │   └── powersync/
-│       └── sync-rules.yaml       # Which rows each user's devices receive
+│       ├── sync-config.yaml      # PowerSync Sync Streams: which rows each user's devices receive
+│       └── setup-role.sql        # One-time SQL for the PowerSync database role
 └── README.md
 ```
 

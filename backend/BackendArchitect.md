@@ -12,7 +12,7 @@ Run through this list before accepting any backend change:
 
 - [ ] **Schema changes go through a migration** in `backend/supabase/migrations/`. SQLAlchemy never creates or alters tables.
 - [ ] **Every new table** has: client-generated `uuid` PK, `owner_id`, `created_at`, `updated_at`, `client_updated_at`, `deleted_at`, an RLS policy, and an index on `owner_id`.
-- [ ] **Every new table that devices need** is added to: `backend/powersync/sync-rules.yaml`, the `powersync` publication (`alter publication powersync add table ...` in the migration), `app/services/registry.py` (if devices write it), and the frontend PowerSync schema (see `frontend/FrontendArchitect.md`).
+- [ ] **Every new table that devices need** is added to: `backend/powersync/sync-config.yaml`, the `powersync` publication (`alter publication powersync add table ...` in the migration), readable by PowerSync's database user (`powersync_%` role; grant in the migration with a guarded `do $$` block so fresh local databases still migrate). **Server-only tables** (`voice_sessions`, `sync_conflicts`, anything new like them) must stay OUT of the publication and grants: add them to the `keep_server_tables_out_of_powersync` pattern, `app/services/registry.py` (if devices write it), and the frontend PowerSync schema (see `frontend/FrontendArchitect.md`).
 - [ ] **Every write is an idempotent upsert by `id`.** Retrying the same request must never create a duplicate.
 - [ ] **Every query is scoped to the current user** (RLS via `set local` claims *and* `owner_id` filter in code).
 - [ ] **Business logic lives in `services/`**, not in routers and not in the LangGraph nodes. Typed and voice entries call the *same* service function.
@@ -59,7 +59,7 @@ Mobile app ── upload queue + voice (write) ──► FastAPI ──► Postg
 | Row Level Security | Users only see/change their own rows | Enabled on **every** table in `public`. |
 | Supabase Storage | Hive photos, voice recordings | Private buckets; path prefix = `{user_id}/...`. |
 | Supabase CLI migrations | Own the schema | `backend/supabase/migrations/*.sql`, timestamped, never edited after being applied to the hosted project. |
-| PowerSync service | Streams changes to devices | Rules in `backend/powersync/sync-rules.yaml`. |
+| PowerSync service | Streams changes to devices | Sync Streams in `backend/powersync/sync-config.yaml`. |
 | Python 3.12+, `uv` | Runtime & env/deps management | Commit `uv.lock`. |
 | FastAPI + Pydantic v2 | HTTP API, validation, OpenAPI | Async endpoints only. |
 | SQLAlchemy 2.x (async) + asyncpg | DB reads/writes from FastAPI | **Never** `create_all()`, never Alembic. Models mirror migrations. |
@@ -131,7 +131,8 @@ backend/
 │   ├── migrations/              # schema, RLS policies, PostGIS, indexes
 │   └── seed.sql                 # local dev data only
 └── powersync/
-    └── sync-rules.yaml          # which rows each user's devices receive
+    ├── sync-config.yaml         # Sync Streams: which rows each user's devices receive
+    └── setup-role.sql           # one-time SQL: powersync_role + SELECT grants (no password in git)
 ```
 
 **Layering rule (strict):** `api → services → models/db`. `assistant/nodes → services`. Routers never touch SQLAlchemy directly; services never import FastAPI; assistant nodes never write SQL.
@@ -246,23 +247,27 @@ This happens in `db.user_session(user)`. On top of that, services always filter 
 
 ## 6. Sync design (the most important backend contract)
 
-### 6.1 Downstream — PowerSync sync rules
+### 6.1 Downstream — PowerSync Sync Streams
 
-`backend/powersync/sync-rules.yaml` defines one bucket per user, parameterized by `token_parameters.user_id`. Each user's devices receive **only their own rows**, including soft-deleted ones (so devices learn about deletions), e.g.:
+`backend/powersync/sync-config.yaml` (Sync Streams, `edition: 3`; the older `bucket_definitions` format is deprecated) has one auto-subscribed stream, `user_data`. Each query filters by `auth.user_id()`, so a user's devices receive **only their own rows**, including soft-deleted ones (so devices learn about deletions):
 
 ```yaml
-bucket_definitions:
+config:
+  edition: 3
+streams:
   user_data:
-    parameters: SELECT request.user_id() AS user_id
-    data:
-      - SELECT * FROM colonies WHERE owner_id = bucket.user_id
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM colonies WHERE owner_id = auth.user_id()
       - SELECT id, owner_id, name, kind, notes, st_y(location) AS lat, st_x(location) AS lng,
                created_at, updated_at, client_updated_at, deleted_at
-        FROM apiaries WHERE owner_id = bucket.user_id
-      # ... one line per synced table
+        FROM apiaries WHERE owner_id = auth.user_id()
+      # ... one query per synced table
 ```
 
-(Exact syntax must match the PowerSync version in use — verify against its docs when writing it.)
+- PowerSync reads Postgres as `powersync_role` (replication + BYPASSRLS, SELECT only on synced tables). Created once by hand with `backend/powersync/setup-role.sql`; the password never goes in git.
+- PowerSync authenticates devices with the same Supabase token (Client Auth → "Use Supabase Auth", JWKS, audience `authenticated`).
+- On the phone, PowerSync delivers `timestamptz` as `YYYY-MM-DD hh:mm:ss.sssZ`, `numeric` as text, booleans as 0/1. The upload endpoint accepts these shapes back (tested).
 
 **Do not sync:** `sync_conflicts` raw payloads (sync a summary only if the app needs to show them), `voice_sessions` (server-only conversation state), anything belonging to other users.
 
@@ -450,12 +455,12 @@ How to run:
 3. `cp .env.example .env`, fill in values. `uv sync` then `uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`.
    Use `0.0.0.0` so a physical phone on the same network can reach it via the computer's LAN IP.
 4. `uv run pytest`, `uv run ruff check .`, `uv run mypy app` must pass before committing.
-5. PowerSync: hosted instance pointed at the Supabase DB (publication `powersync`), Supabase Auth as JWT source, rules from `powersync/sync-rules.yaml`.
+5. PowerSync: see `backend/DEPLOY.md` (role SQL, direct connection, Supabase Auth, Sync Streams from `powersync/sync-config.yaml`).
 6. Free-tier Supabase projects pause after ~1 week idle.
 
 Optional local stack: install Docker, `npx supabase start`, `npx supabase db reset`.
 
-**Deployment: Vercel.** FastAPI runs as a Vercel Python serverless function (project Root Directory = `backend`, entrypoint `app/main.py:app`). Because functions are short-lived:
+**Deployment: Vercel** (step-by-step in `backend/DEPLOY.md`). FastAPI runs as a Vercel Python function: Root Directory = `backend`, entrypoint `[tool.vercel] entrypoint = "app.main:app"` in pyproject, `vercel.json` pins region `dub1` (Dublin, next to Supabase eu-west-1) and `maxDuration` 60 s; `.vercelignore` keeps `.env` and tests out of CLI uploads. Request bodies are limited to 4.5 MB. Because functions are short-lived:
 - `DATABASE_URL` = Supabase **pooler** URL (port 6543, transaction mode) and `DB_SERVERLESS=true` → `NullPool`, prepared statements off (see `app/db.py`).
 - Keep requests short. A voice turn is one Groq call; state lives in `voice_sessions`, so each request is independent.
 - Env vars are set in the Vercel project settings, never committed.
@@ -511,4 +516,8 @@ Add a line whenever a rule above changes or a non-obvious choice is made.
 | 2026-11-25 | Assistant speaks English and Romanian; templated messages per language, rules-based yes/no. | User requirement: it must understand Romanian. |
 | 2026-11-25 | Voice inventory supports `purchase` and `used` only; `moved`/`correction` stay in typed forms. | Moves need two sites; corrections need the current stock — too error-prone by voice. |
 | 2026-11-25 | Units are never converted; mismatches ask or skip the stock change. | Stock is a plain sum per item. |
+| 2026-11-25 | PowerSync **Sync Streams** (`edition: 3`) instead of deprecated `bucket_definitions`; file renamed to `sync-config.yaml`. | Current PowerSync format; same per-user rows. |
+| 2026-11-25 | `powersync_role` gets SELECT only on synced tables (not `FOR ALL TABLES` / default privileges). | Keeps `voice_sessions` and `sync_conflicts` out of PowerSync. |
+| 2026-11-25 | PowerSync connected via its "Set Up with Supabase" button (role `powersync_<random>`); a migration removes server-only tables from its publication and grants. | The button publishes and grants every table. |
+| 2026-11-25 | Vercel region `dub1`. | Supabase project is in eu-west-1 (Ireland); every request talks to the DB. |
 | 2026-11-19 | `profiles.default_units` dropped for now. | Not needed until phase 2 forms; add with a migration then. |

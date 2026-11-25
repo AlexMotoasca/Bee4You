@@ -1,0 +1,10 @@
+# Never upload local secrets or tooling (matters for `vercel` CLI deploys).
+.env
+.env.*
+!.env.example
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+tests/

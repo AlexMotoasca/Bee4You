@@ -138,7 +138,7 @@ frontend/
 Differences that are expected:
 
 - `apiaries` has `lat` / `lng` (REAL) instead of a PostGIS point.
-- SQLite types: UUIDs and timestamps are `TEXT` (ISO-8601 UTC), numbers `REAL`/`INTEGER`, booleans `INTEGER` 0/1. Convert in the feature layer, not in components.
+- SQLite types (as PowerSync delivers them): UUIDs `TEXT`; timestamps `TEXT` like `2026-11-25 09:30:00.000Z`; `numeric` amounts `TEXT` (exact, e.g. `"5.5"` — parse for display, never do float math on stock); integers `INTEGER`; `lat`/`lng` `REAL`; booleans `INTEGER` 0/1. Convert in the feature layer, not in components. New rows may be written with ISO `T` timestamps; the server accepts both.
 - `owner_id` exists locally but is **never trusted** by the server — set it to the current user id for local queries anyway.
 
 **Order of change:** backend migration → sync rules → `schema.ts` → features. Never add a local-only column that the backend doesn't know about (except PowerSync `localOnly` tables, which must be documented here).

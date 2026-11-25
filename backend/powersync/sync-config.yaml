@@ -1,0 +1,35 @@
+# PowerSync Sync Streams: which rows each user's devices receive (downstream only).
+# Writes go up through FastAPI (POST /v1/sync/upload), never through PowerSync.
+#
+# Every table listed here must also be:
+#   - in the `powersync` publication (see supabase/migrations),
+#   - readable by `powersync_role` (see powersync/setup-role.sql),
+#   - in frontend/src/db/schema.ts with the same column names.
+# Soft-deleted rows ARE synced so devices learn about deletions.
+# Server-only tables (voice_sessions, sync_conflicts) are never synced.
+#
+# Deploy: PowerSync Dashboard > Sync Streams > paste > Validate > Deploy
+#     or: powersync validate && powersync deploy sync-config   (PowerSync CLI)
+
+config:
+  edition: 3
+
+streams:
+  user_data:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM profiles WHERE id = auth.user_id()
+      # SQLite has no PostGIS: send the point as plain lat/lng numbers.
+      - >-
+        SELECT id, owner_id, name, kind, notes,
+               st_y(location) AS lat, st_x(location) AS lng,
+               created_at, updated_at, client_updated_at, deleted_at
+        FROM apiaries WHERE owner_id = auth.user_id()
+      - SELECT * FROM colonies WHERE owner_id = auth.user_id()
+      - SELECT * FROM colony_placements WHERE owner_id = auth.user_id()
+      - SELECT * FROM inventory_items WHERE owner_id = auth.user_id()
+      - SELECT * FROM inventory_adjustments WHERE owner_id = auth.user_id()
+      - SELECT * FROM treatments WHERE owner_id = auth.user_id()
+      - SELECT * FROM harvests WHERE owner_id = auth.user_id()
+      - SELECT * FROM colony_notes WHERE owner_id = auth.user_id()
+      - SELECT * FROM voice_notes WHERE owner_id = auth.user_id()
