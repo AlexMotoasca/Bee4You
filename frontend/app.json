@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "Bee4You",
+    "slug": "bee4you",
+    "scheme": "bee4you",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.bee4you.app"
+    },
+    "android": {
+      "package": "com.bee4you.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#FFF4D6",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

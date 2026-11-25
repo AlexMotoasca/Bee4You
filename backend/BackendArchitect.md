@@ -177,7 +177,7 @@ Domain tables (columns beyond the common ones):
 | `treatments` | `colony_id`, `apiary_id`, `inventory_item_id` (nullable), `product_name` (denormalized text), `amount numeric`, `unit`, `treated_at`, `notes`, `source` (`manual` / `voice`) |
 | `harvests` | `apiary_id`, `colony_id` (nullable — harvest can be apiary-level), `quantity numeric`, `unit`, `harvested_at`, `notes`, `source` |
 | `colony_notes` | `colony_id`, `apiary_id`, `noted_at`, `queen_seen bool`, `temperament` (`calm` / `nervous` / `aggressive`), `text`, `source` |
-| `attachments` | `colony_id` / `apiary_id` / `record_type` + `record_id`, `storage_path`, `kind` (`photo` / `audio`) |
+| `attachments` *(later — not built)* | `colony_id` / `apiary_id` / `record_type` + `record_id`, `storage_path`, `kind` (`photo` / `audio`). Needs Storage buckets first. |
 | `voice_notes` | `transcript`, `audio_path`, `locale`, `context_colony_id`, `context_apiary_id`, `status` (`pending` / `processing` / `needs_answer` / `needs_confirmation` / `saved` / `failed`), `thread_id`, `result_record_type`, `result_record_id`, `error` |
 | `sync_conflicts` | `table_name`, `record_id`, `client_payload jsonb`, `server_payload jsonb`, `resolved_at`, `resolution` |
 
