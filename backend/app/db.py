@@ -59,9 +59,27 @@ async def user_session(user: CurrentUser) -> AsyncIterator[AsyncSession]:
     Anything not committed is rolled back when the session closes.
     """
     async with get_sessionmaker()() as session:
-        claims = json.dumps({"sub": str(user.id), "role": "authenticated"})
-        await session.execute(text("set local role authenticated"))
-        await session.execute(
-            text("select set_config('request.jwt.claims', :claims, true)"), {"claims": claims}
-        )
+        await set_user_claims(session, user)
         yield session
+
+
+async def set_user_claims(session: AsyncSession, user: CurrentUser) -> None:
+    claims = json.dumps({"sub": str(user.id), "role": "authenticated"})
+    await session.execute(text("set local role authenticated"))
+    await session.execute(
+        text("select set_config('request.jwt.claims', :claims, true)"), {"claims": claims}
+    )
+
+
+@asynccontextmanager
+async def service_role(session: AsyncSession) -> AsyncIterator[None]:
+    """Temporarily leave the `authenticated` role inside a user transaction.
+
+    Only for server-only tables (voice_sessions) that users must not read or write.
+    Callers MUST still filter by owner_id explicitly.
+    """
+    await session.execute(text("set local role none"))
+    try:
+        yield
+    finally:
+        await session.execute(text("set local role authenticated"))

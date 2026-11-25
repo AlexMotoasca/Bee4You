@@ -1,5 +1,6 @@
 """What devices may write per table. Field names = DB column names (snake_case)."""
 
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -8,6 +9,16 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, create_model, 
 ApiaryKind = Literal["permanent", "temporary"]
 ColonyMode = Literal["stationary", "migratory"]
 ColonyStatus = Literal["active", "dead", "sold", "merged"]
+# Shared with the frontend and the DB domain `measure_unit`.
+Unit = Literal["ml", "l", "g", "kg", "pcs", "strips", "frames"]
+Source = Literal["manual", "voice"]
+ItemCategory = Literal["treatment", "equipment", "consumable", "other"]
+AdjustmentReason = Literal["purchase", "used", "moved", "correction"]
+Temperament = Literal["calm", "nervous", "aggressive"]
+VoiceNoteStatus = Literal[
+    "pending", "processing", "needs_answer", "needs_confirmation", "saved", "cancelled", "failed"
+]
+Amount = Annotated[Decimal, Field(gt=0, le=1_000_000, max_digits=12, decimal_places=4)]
 
 
 class ClientRow(BaseModel):
@@ -58,6 +69,83 @@ class ColonyPlacementWrite(ClientRow):
         if self.ended_at is not None and self.ended_at < self.started_at:
             raise ValueError("ended_at must not be before started_at")
         return self
+
+
+class InventoryItemWrite(ClientRow):
+    name: str = Field(min_length=1, max_length=120)
+    category: ItemCategory = "other"
+    unit: Unit
+    apiary_id: UUID | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class TreatmentWrite(ClientRow):
+    colony_id: UUID
+    apiary_id: UUID
+    inventory_item_id: UUID | None = None
+    product_name: str = Field(min_length=1, max_length=120)
+    amount: Amount
+    unit: Unit
+    treated_at: AwareDatetime
+    notes: str | None = Field(default=None, max_length=2000)
+    source: Source = "manual"
+
+
+class InventoryAdjustmentWrite(ClientRow):
+    item_id: UUID
+    delta: Annotated[Decimal, Field(ge=-1_000_000, le=1_000_000, max_digits=12, decimal_places=4)]
+    unit: Unit
+    reason: AdjustmentReason
+    apiary_id: UUID | None = None
+    adjusted_at: AwareDatetime
+    treatment_id: UUID | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+    source: Source = "manual"
+
+    @model_validator(mode="after")
+    def _non_zero(self) -> "InventoryAdjustmentWrite":
+        if self.delta == 0:
+            raise ValueError("delta must not be zero")
+        return self
+
+
+class HarvestWrite(ClientRow):
+    apiary_id: UUID
+    colony_id: UUID | None = None
+    quantity: Amount
+    unit: Unit
+    harvested_at: AwareDatetime
+    notes: str | None = Field(default=None, max_length=2000)
+    source: Source = "manual"
+
+
+class ColonyNoteWrite(ClientRow):
+    colony_id: UUID
+    apiary_id: UUID
+    noted_at: AwareDatetime
+    queen_seen: bool | None = None
+    temperament: Temperament | None = None
+    text: str | None = Field(default=None, max_length=4000)
+    source: Source = "manual"
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> "ColonyNoteWrite":
+        if self.queen_seen is None and self.temperament is None and not (self.text or "").strip():
+            raise ValueError("a note needs text, queen_seen or temperament")
+        return self
+
+
+class VoiceNoteWrite(ClientRow):
+    transcript: str = Field(min_length=1, max_length=4000)
+    audio_path: str | None = Field(default=None, max_length=500)
+    locale: str = Field(default="en-US", min_length=2, max_length=20)
+    context_colony_id: UUID | None = None
+    context_apiary_id: UUID | None = None
+    status: VoiceNoteStatus = "pending"
+    thread_id: UUID | None = None
+    result_record_type: str | None = Field(default=None, max_length=40)
+    result_record_id: UUID | None = None
+    error: str | None = Field(default=None, max_length=1000)
 
 
 def make_patch_model(model: type[ClientRow]) -> type[ClientRow]:

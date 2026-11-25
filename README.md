@@ -24,7 +24,7 @@ React Native + Expo
         │ sign-in, sync                    │ voice entries, uploads, complex logic
         ▼                                  ▼
    Supabase                             FastAPI (Python)
-   Auth · Postgres + PostGIS ◄────────── LangGraph assistant (LangChain + Claude)
+   Auth · Postgres + PostGIS ◄────────── LangGraph assistant (LangChain + Groq)
    Storage · Row Level Security          Verifies Supabase JWTs
         ▲
         │ PowerSync service streams changes to devices
@@ -65,11 +65,12 @@ The app signs in with Supabase Auth and sends the same access token to FastAPI, 
 | Technology | Role |
 | --- | --- |
 | LangGraph | Run the voice-entry conversation as a graph with steps for extraction, lookup, follow-up questions, and confirmation. |
-| LangChain, langchain-anthropic | Call Claude (Haiku for speed and cost) with structured output, so each spoken entry becomes a validated treatment, harvest, inventory, or note record. |
-| LangGraph Postgres checkpointer | Save each conversation in Postgres, so a follow-up question and its answer can arrive in separate requests. |
+| LangChain, langchain-groq | Call a Groq-hosted model (`openai/gpt-oss-20b`, free tier) with strict JSON-schema output, so each spoken entry (English or Romanian) becomes a validated treatment, harvest, inventory, or note record. |
+| Groq Whisper | Server-side speech-to-text (`whisper-large-v3-turbo`) for recordings the phone can't transcribe, such as offline voice notes. |
+| `voice_sessions` table | Save each LangGraph conversation in Postgres, in the same transaction as the saved record, so a follow-up question and its answer can arrive in separate requests. |
 | LangSmith (optional) | Trace graph runs to debug misheard or misparsed entries. |
 
-The Anthropic API key and all LLM calls stay on the FastAPI server. The app never talks to the model directly.
+The Groq API key and all model calls stay on the FastAPI server. The app never talks to the model directly.
 
 ## Voice entry
 
@@ -159,7 +160,7 @@ These steps are for scaffolding the project. Choose compatible versions and comm
 1. **Prepare the tools.** Install Node.js LTS, Python 3.12+ with `uv` (or another environment manager), the Supabase CLI (Docker is optional, only for running Supabase locally; a hosted project works without it). Have an Android or iOS device for field testing. Local native builds require Android Studio for Android or macOS with Xcode for iOS.
 2. **Create the Supabase project.** From `backend/`, run `supabase init` and `supabase start` for local development, and create a hosted project for the phone to reach. Enable PostGIS, write the first migration with the core tables and RLS policies, and turn on the sign-in providers you need. Free-tier hosted projects pause after about a week without activity.
 3. **Set up PowerSync.** Create a PowerSync instance connected to the Supabase database, configure Supabase Auth as its JWT source, and write the first sync rules so each user receives only their own apiaries and colonies.
-4. **Create the backend.** In `backend/`, scaffold a FastAPI project with `fastapi`, `uvicorn`, `pydantic`, `sqlalchemy[asyncio]`, `asyncpg`, `pyjwt`, `langchain`, `langchain-anthropic`, `langgraph`, and `langgraph-checkpoint-postgres`. Configure `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET` (or the project’s JWKS URL), and `ANTHROPIC_API_KEY`. Keep these on the server only.
+4. **Create the backend.** In `backend/`, scaffold a FastAPI project with `fastapi`, `uvicorn`, `pydantic`, `sqlalchemy[asyncio]`, `asyncpg`, `pyjwt`, `langchain-groq`, `langgraph`, and `python-multipart`. Configure `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET` (or the project’s JWKS URL), and `GROQ_API_KEY`. Keep these on the server only.
 5. **Create the mobile project.** In `frontend/`, scaffold a TypeScript Expo app with Expo Router, then install the native dependencies: `npx expo install @maplibre/maplibre-react-native expo-speech-recognition expo-speech expo-haptics @powersync/react-native @supabase/supabase-js`. Configure NativeWind, build a development client, and set `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, `EXPO_PUBLIC_POWERSYNC_URL`, and `EXPO_PUBLIC_API_URL`. On a physical phone, `localhost` refers to the phone itself, so use your computer’s network address.
 6. **Configure maps.** Create a MapTiler or Stadia Maps account, restrict the key to the app, and set the style URL in the mobile config.
 7. **Verify the first field workflow.** Sign in, download one apiary, and disable connectivity. Save a treatment, close and reopen the app, then reconnect. Check that the treatment stays visible locally and appears exactly once in Supabase.

@@ -26,19 +26,26 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="run integration tests against DATABASE_URL (creates and deletes test users)",
     )
+    parser.addoption(
+        "--groq",
+        action="store_true",
+        help="call the real Groq API with GROQ_API_KEY (uses free-tier quota)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "db: needs a real Supabase database (run with --db)")
+    config.addinivalue_line("markers", "groq: calls the real Groq API (run with --groq)")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if config.getoption("--db"):
-        return
-    skip = pytest.mark.skip(reason="needs --db")
-    for item in items:
-        if "db" in item.keywords:
-            item.add_marker(skip)
+    for flag in ("db", "groq"):
+        if config.getoption(f"--{flag}"):
+            continue
+        skip = pytest.mark.skip(reason=f"needs --{flag}")
+        for item in items:
+            if flag in item.keywords:
+                item.add_marker(skip)
 
 
 @pytest.fixture

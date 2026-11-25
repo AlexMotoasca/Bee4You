@@ -7,13 +7,31 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import CurrentUser
-from app.models.db.tables import Apiary, Base, Colony, ColonyPlacement, Profile
+from app.models.db.tables import (
+    Apiary,
+    Base,
+    Colony,
+    ColonyNote,
+    ColonyPlacement,
+    Harvest,
+    InventoryAdjustment,
+    InventoryItem,
+    Profile,
+    Treatment,
+    VoiceNote,
+)
 from app.models.schemas.records import (
     ApiaryWrite,
     ClientRow,
+    ColonyNoteWrite,
     ColonyPlacementWrite,
     ColonyWrite,
+    HarvestWrite,
+    InventoryAdjustmentWrite,
+    InventoryItemWrite,
     ProfileWrite,
+    TreatmentWrite,
+    VoiceNoteWrite,
     make_patch_model,
 )
 from app.models.schemas.sync import OpType
@@ -63,5 +81,12 @@ REGISTRY: dict[str, TableSpec] = {
             ColonyPlacementWrite,
             before_write=resolve_placement_overlap,
         ),
+        TableSpec("inventory_items", InventoryItem, InventoryItemWrite),
+        # Order matters inside one upload batch: a treatment before its stock adjustment.
+        TableSpec("treatments", Treatment, TreatmentWrite),
+        TableSpec("inventory_adjustments", InventoryAdjustment, InventoryAdjustmentWrite),
+        TableSpec("harvests", Harvest, HarvestWrite),
+        TableSpec("colony_notes", ColonyNote, ColonyNoteWrite),
+        TableSpec("voice_notes", VoiceNote, VoiceNoteWrite),
     )
 }

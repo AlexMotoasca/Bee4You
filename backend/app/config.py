@@ -25,6 +25,14 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = []
 
+    # Voice assistant (Groq). The key stays on the server.
+    groq_api_key: str | None = None
+    groq_model: str = "openai/gpt-oss-20b"  # supports strict JSON-schema output
+    groq_transcription_model: str = "whisper-large-v3-turbo"
+    groq_timeout_seconds: float = 20.0
+    voice_max_questions: int = 6
+    voice_max_audio_bytes: int = 4_000_000  # Vercel request body limit is ~4.5 MB
+
     @property
     def jwt_issuer(self) -> str:
         return f"{self.supabase_url.rstrip('/')}/auth/v1"

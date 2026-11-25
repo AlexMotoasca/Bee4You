@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health, me, sync
+from app.api import health, me, sync, voice
 from app.config import get_settings
 from app.db import dispose_engine
 from app.errors import register_error_handlers
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(me.router, prefix="/v1")
     app.include_router(sync.router, prefix="/v1")
+    app.include_router(voice.router, prefix="/v1")
     return app
 
 

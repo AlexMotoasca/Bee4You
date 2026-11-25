@@ -19,7 +19,7 @@
 - [ ] **"Saved" ≠ "synced".** Show local save (haptic + toast) separately from sync status.
 - [ ] **Contextual quick entry:** if the user is on a colony/apiary screen, that colony/apiary is pre-selected.
 - [ ] **Voice entry produces the same record** a typed entry would — no voice-only data shapes.
-- [ ] **No secrets in the app.** Only `EXPO_PUBLIC_*` values (URLs, anon key, map key restricted to the app). Never the Anthropic key.
+- [ ] **No secrets in the app.** Only `EXPO_PUBLIC_*` values (URLs, anon key, map key restricted to the app). Never the Groq key.
 - [ ] **TypeScript strict, no `any`** in domain code.
 - [ ] Change belongs to the **current roadmap phase** (section 13).
 
@@ -253,7 +253,7 @@ idle ──hold button──► listening ──release──► transcribing
   │                       online? ──no──► save voice_notes row (pending) → haptic "saved" → idle
   │                          │yes
   │                          ▼
-  │                   POST /v1/voice/sessions  (transcript + context colony/apiary + locale)
+  │                   POST /v1/voice/sessions  (transcript + context colony/apiary + locale, e.g. ro-RO)
   │                          │
   │             ┌────────────┼──────────────┬────────────────┐
   │         question       confirm         saved       not_understood
@@ -270,6 +270,10 @@ idle ──hold button──► listening ──release──► transcribing
 - Show the draft visually too (big text) so the user can glance at it.
 - **Nothing is saved without "yes".** Amounts are always read back (speech confuses "15"/"50").
 - The server saves the record and it arrives via PowerSync; use the returned `record` id to highlight it immediately.
+
+**Language:** send the profile `locale` (`ro-RO` or `en-US`). The server answers in that language (questions, read-back, "Salvat.") and accepts "da"/"nu"/"anulează" as well as "yes"/"no"/"cancel". Use the same locale for `expo-speech-recognition` and `expo-speech`.
+
+**Server speech-to-text:** if the phone's recognizer is unavailable (or for an offline voice note recorded as audio), upload the clip to `POST /v1/voice/transcribe` (multipart `audio` ≤ 4 MB, `language=ro`) and use the returned `text` as the transcript.
 
 ### 9.2 Offline voice
 

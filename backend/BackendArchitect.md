@@ -16,7 +16,7 @@ Run through this list before accepting any backend change:
 - [ ] **Every write is an idempotent upsert by `id`.** Retrying the same request must never create a duplicate.
 - [ ] **Every query is scoped to the current user** (RLS via `set local` claims *and* `owner_id` filter in code).
 - [ ] **Business logic lives in `services/`**, not in routers and not in the LangGraph nodes. Typed and voice entries call the *same* service function.
-- [ ] **No secrets in code or in the app.** `ANTHROPIC_API_KEY`, `DATABASE_URL`, JWT secrets live only in server env vars.
+- [ ] **No secrets in code or in the app.** `GROQ_API_KEY`, `DATABASE_URL`, JWT secrets live only in server env vars.
 - [ ] **The LLM only extracts.** Matching colonies/products, validation, and saving are plain code.
 - [ ] **Nothing is saved from voice without an explicit "yes"** after the summary (amounts always read back).
 - [ ] **Pydantic models for every request/response** (they generate the OpenAPI docs the frontend relies on).
@@ -35,13 +35,13 @@ The backend consists of three cooperating parts:
 | --- | --- | --- |
 | **Supabase** | Auth (JWT issuer), Postgres + PostGIS (central database), Storage (photos, voice audio), Row Level Security | App (auth, storage), PowerSync, FastAPI |
 | **PowerSync service** | Streams server rows *down* to each device's SQLite according to sync rules | Supabase Postgres (replication), App |
-| **FastAPI (Python)** | Receives the device upload queue, runs the voice assistant (LangGraph + Claude), holds logic too complex for direct DB access | Supabase Postgres, Anthropic API, App |
+| **FastAPI (Python)** | Receives the device upload queue, runs the voice assistant (LangGraph + Groq), holds logic too complex for direct DB access | Supabase Postgres, Anthropic API, App |
 
 ```text
 Mobile app ── sign-in / storage ─────────────► Supabase Auth + Storage
 Mobile app ◄── downstream sync (read) ──────── PowerSync service ◄── Postgres replication
 Mobile app ── upload queue + voice (write) ──► FastAPI ──► Postgres (SQLAlchemy async)
-                                                  └──► Claude (LangChain / LangGraph)
+                                                  └──► Groq (Whisper speech-to-text, gpt-oss LLM)
 ```
 
 **Key principle:** data flows **down** through PowerSync and **up** through FastAPI. The app never writes to Postgres tables directly via supabase-js (only Auth and Storage use supabase-js).
@@ -65,8 +65,9 @@ Mobile app ── upload queue + voice (write) ──► FastAPI ──► Postg
 | SQLAlchemy 2.x (async) + asyncpg | DB reads/writes from FastAPI | **Never** `create_all()`, never Alembic. Models mirror migrations. |
 | PyJWT | Verify Supabase JWTs | Prefer JWKS (asymmetric); HS256 secret only as fallback. |
 | LangGraph | Voice-entry conversation graph | Interrupts for "ask" and "confirm". |
-| LangChain + langchain-anthropic | Claude calls with structured output | Default model: Claude Haiku (speed/cost). |
-| langgraph-checkpoint-postgres | Persist conversations between requests | Uses the same Postgres, own schema/tables. |
+| LangChain + langchain-groq | LLM calls with strict JSON-schema structured output | Default `openai/gpt-oss-20b` (free tier, strict schemas). Configurable via `GROQ_MODEL`. |
+| Groq Whisper (`groq` SDK) | Server-side speech-to-text fallback | Default `whisper-large-v3-turbo`; `language="ro"` / `"en"`. |
+| `voice_sessions` table + `ThreadStore` | Persist LangGraph threads between requests | Our own migration-owned table, same transaction as the saved record (see §8.2). Replaces langgraph-checkpoint-postgres. |
 | LangSmith (optional) | Trace graph runs | Enabled only via env var; no PII in tags. |
 
 ---
@@ -82,7 +83,7 @@ backend/
 ├── uv.lock
 ├── .env.example                 # every env var, no real values
 ├── app/
-│   ├── main.py                  # FastAPI app factory, router registration, lifespan (DB pool, checkpointer)
+│   ├── main.py                  # FastAPI app factory, router registration, lifespan (DB pool)
 │   ├── config.py                # pydantic-settings Settings; the ONLY place env vars are read
 │   ├── db.py                    # async engine, session factory, `user_session()` that sets RLS claims
 │   ├── errors.py                # AppError + handlers → {"error": {...}} responses
@@ -91,7 +92,7 @@ backend/
 │   │   ├── health.py
 │   │   ├── me.py                # GET /v1/me
 │   │   ├── sync.py              # POST /v1/sync/upload  (PowerSync upload queue)
-│   │   ├── voice.py             # /v1/voice/...         (assistant)
+│   │   ├── voice.py             # /v1/voice/...         (transcribe + assistant)
 │   │   └── records.py           # complex reads (e.g. colony history) if needed
 │   ├── auth/
 │   │   └── jwt.py               # Supabase JWT verification (JWKS + fallback)
@@ -109,11 +110,17 @@ backend/
 │   │   ├── sync.py              # generic idempotent LWW upsert + conflict logging
 │   │   └── resolve.py           # "hive 12" → colony id, product → inventory item (plain code)
 │   └── assistant/
-│       ├── graph.py             # LangGraph StateGraph definition
-│       ├── state.py             # graph state TypedDict / Pydantic
-│       ├── nodes/               # extract, resolve, ask, confirm, save
-│       ├── prompts/             # prompt templates (versioned, plain text)
-│       └── llm.py               # model factory (ChatAnthropic), structured output helpers
+│       ├── graph.py             # LangGraph StateGraph: extract → resolve → ask/confirm → save
+│       ├── llm.py               # Groq extraction (ChatGroq, strict JSON schema) — the only LLM call
+│       ├── prompts/             # extract_system.txt (English + Romanian examples)
+│       ├── resolve.py           # plain code: names → ids, units, dates, ONE question if incomplete
+│       ├── catalog.py           # the user's hives/apiaries/items loaded per turn
+│       ├── numbers.py           # Romanian/English number words → digits (before the LLM)
+│       ├── messages.py          # everything spoken, per language (en, ro) + yes/no/cancel words
+│       ├── store.py             # ThreadStore: LangGraph thread ⇄ voice_sessions JSON
+│       ├── service.py           # runs a turn; builds rows and saves them via services/sync.py
+│       ├── transcribe.py        # Groq Whisper speech-to-text
+│       └── groq_client.py       # Groq client, key check, Whisper vocabulary prompts
 ├── tests/
 │   ├── conftest.py              # test DB, fake user, fake LLM
 │   ├── services/
@@ -225,8 +232,8 @@ This happens in `db.user_session(user)`. On top of that, services always filter 
 ### 5.4 Secrets
 
 - Env vars only, read via `app/config.py` (pydantic-settings). `.env.example` lists them all without values.
-- Required: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_JWKS_URL` or `SUPABASE_JWT_SECRET`, `ANTHROPIC_API_KEY`. Optional: `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `ANTHROPIC_MODEL`, `LOG_LEVEL`, `CORS_ORIGINS`.
-- **The Anthropic key never leaves the server.** The app never talks to the LLM directly.
+- Required: `DATABASE_URL`, `SUPABASE_URL` (JWKS derived from it), `GROQ_API_KEY` (voice only). Optional: `SUPABASE_JWKS_URL`, `SUPABASE_JWT_SECRET` (legacy HS256), `DB_SERVERLESS`, `GROQ_MODEL`, `GROQ_TRANSCRIPTION_MODEL`, `LOG_LEVEL`, `CORS_ORIGINS`, `LANGSMITH_API_KEY` (tracing).
+- **The Groq key never leaves the server.** The app never talks to the LLM or Whisper directly.
 - Never log tokens, full transcripts at INFO level, or audio paths with signed URLs.
 
 ### 5.5 Storage
@@ -257,7 +264,7 @@ bucket_definitions:
 
 (Exact syntax must match the PowerSync version in use — verify against its docs when writing it.)
 
-**Do not sync:** `sync_conflicts` raw payloads (sync a summary only if the app needs to show them), LangGraph checkpoint tables, anything belonging to other users.
+**Do not sync:** `sync_conflicts` raw payloads (sync a summary only if the app needs to show them), `voice_sessions` (server-only conversation state), anything belonging to other users.
 
 ### 6.2 Upstream — `POST /v1/sync/upload`
 
@@ -326,14 +333,16 @@ Rules:
 | `GET /v1/colonies/{id}/history` | Merged placements + records timeline (if too heavy for local SQLite) | 1–2 |
 | `GET /v1/apiaries/nearby?lat&lng&radius` | PostGIS query (optional) | later |
 | `GET /v1/conflicts` / `POST /v1/conflicts/{id}/resolve` | Conflict review | 3 |
+| `POST /v1/voice/transcribe` | Groq Whisper speech-to-text (multipart `audio`, optional `language`) | 4 |
 | `POST /v1/voice/sessions` | Start a voice entry | 4 |
+| `GET /v1/voice/sessions/{thread_id}` | Repeat the pending question (app restarted mid-conversation) | 4 |
 | `POST /v1/voice/sessions/{thread_id}/reply` | Answer a question / confirm | 4 |
 | `POST /v1/voice/notes/{voice_note_id}/process` | Process an offline pending voice note | 4 |
 | `POST /v1/assistant/ask` | Spoken history questions | 5 |
 
 ---
 
-## 8. Voice assistant (LangGraph)
+## 8. Voice assistant (LangGraph + Groq)
 
 ### 8.1 Graph
 
@@ -349,30 +358,37 @@ transcript ──► extract ──► resolve ──► missing info? ──yes
 
 | Node | What it does | LLM? |
 | --- | --- | --- |
-| `extract` | Transcript (+ previous draft + answer) → typed draft via structured output: `TreatmentDraft`, `HarvestDraft`, `InventoryDraft`, `NoteDraft` (a discriminated union). | **Yes** |
+| `extract` | Whole conversation (+ previous draft) → one flat `ExtractedEntry` (`kind` = treatment / harvest / inventory / note / unknown, plus nullable fields) via Groq strict JSON schema. | **Yes** |
 | `resolve` | Plain code: "hive 12" → colony id (by `number` / `label`, scoped to user and context apiary), product → inventory item (fuzzy match), units normalization, date defaults ("today"). Unknown/ambiguous → list of missing fields. | No |
 | `ask` | `interrupt()` with one question (one field at a time, short, speakable). | No (templated) |
 | `confirm` | `interrupt()` with a spoken summary. **Always reads back amounts and units.** | No (templated) |
-| `save` | Calls the **same service** as typed entries (`services.treatments.create(...)`). Record `id` is generated once and stored in the graph state so a retried save is idempotent. `source = 'voice'`. | No |
+| `save` | Builds the same rows a typed entry creates and writes them through `services/sync.py` (`apply_batch` → same validation, RLS, upsert). Ids are generated at session start and stored in state, so a retried save is idempotent. `source = 'voice'`. A treatment with a matching stock item also writes the `used` adjustment. | No |
 
 ### 8.2 Rules
 
-- **The LLM never decides IDs, never writes to the DB, never sees other users' data.** It only gets the transcript, the current draft, and a short list of the user's colony labels/product names as hints.
-- Structured output only (Pydantic models with `with_structured_output`). Validate; on parse failure → "not understood" response, not a crash.
-- Confirmation words ("yes", "da", "correct", "no", "change the amount to…") are interpreted by a small classifier step (LLM or rules) — "no"/corrections go back to `extract` with the correction appended.
-- Conversation state persists via **`AsyncPostgresSaver`** (langgraph-checkpoint-postgres); `thread_id` is a UUID returned to the app. A question and its answer can arrive in separate HTTP requests (even minutes apart).
-- Threads are scoped to the user: store `owner_id` in state and verify it on every resume.
-- Prompts live in `assistant/prompts/` as versioned templates, not inline strings.
-- Locale-aware: pass the user's `locale` so questions/summaries are produced in their language.
-- Model name from config (`ANTHROPIC_MODEL`, default Haiku). Set timeouts and a max retry count.
+- **The LLM never decides IDs, never writes to the DB, never sees other users' data.** It only gets the conversation, the current draft, and the user's own hive labels / apiary names / item names as spelling hints.
+- **Groq strict JSON schema** (`with_structured_output(method="json_schema", strict=True)`): every field required-but-nullable. Parse failure → `not_understood` question, not a crash. Groq API errors → 503 `assistant_unavailable`; nothing is stored, so the app can retry the same request.
+- **Languages: English and Romanian.** `locale` (`ro-RO`, `en-US`) picks the language of questions and read-backs (`messages.py`); the extraction prompt has Romanian examples; Whisper gets `language="ro"` plus beekeeping vocabulary. Yes/no/cancel words of both languages are always accepted ("da", "nu", "anulează", "yes"...). Romanian read-backs use correct numerals ("25 de mililitri", "2,5 litri").
+- **Number words become digits in plain code** (`numbers.py`) before the LLM sees the text ("optsprezece" → 18, "douăzeci și cinci" → 25, "doi virgulă cinci" → 2.5, English too). The model miscounted number words in testing.
+- If Groq rejects the model's own output for breaking the schema (e.g. the text "null" in an enum field), the generated JSON is recovered from the error and validated leniently instead of failing the turn.
+- Confirmation answers are classified by **rules, not the LLM** (`classify_answer`): yes → save; cancel → end; a bare "no" → "What should I change?"; anything else is a correction and goes back to `extract`.
+- **One question at a time**, templated. Max `VOICE_MAX_QUESTIONS` (6) questions, then the session ends without saving.
+- Units are never converted. A treatment only decrements stock when its unit equals the item's unit; an inventory change in a different unit triggers a question.
+- **Conversation state** lives in `voice_sessions` (one row per thread, JSON). Each request loads the thread into LangGraph's `InMemorySaver` (`ThreadStore`), runs the graph and writes it back **in the same transaction** as the saved record and the voice-note status — they commit together or not at all. No extra DB driver; works on the Supabase pooler and Vercel.
+- `voice_sessions` is **server-only**: RLS on with no policies and no grants for `anon`/`authenticated`. The API reads/writes it inside `db.service_role()` and always filters by `owner_id` (another user's thread → 404).
+- Prompts live in `assistant/prompts/` as versioned templates, not inline strings. Spoken text lives in `messages.py`.
+- Model names from config (`GROQ_MODEL`, `GROQ_TRANSCRIPTION_MODEL`); timeout `GROQ_TIMEOUT_SECONDS` and 2 retries.
 
 ### 8.3 Voice API contract
 
 ```jsonc
+// POST /v1/voice/transcribe   (multipart/form-data, ≤ 4 MB)
+audio=<m4a|mp3|wav|webm|ogg|flac>, language=ro   →   { "text": "Stupul 12, acid oxalic, 5 ml" }
+
 // POST /v1/voice/sessions
-{ "transcript": "Hive 12, oxalic acid, 5 ml, queen seen, calm",
+{ "transcript": "Stupul 12, acid oxalic, 5 ml, matca văzută",
   "context": { "colony_id": "uuid|null", "apiary_id": "uuid|null" },
-  "locale": "en-US", "voice_note_id": "uuid|null", "client_time": "ISO" }
+  "locale": "ro-RO", "client_time": "ISO" }
 
 // POST /v1/voice/sessions/{thread_id}/reply
 { "text": "yes" }
@@ -386,11 +402,11 @@ transcript ──► extract ──► resolve ──► missing info? ──yes
   "record": { "table": "treatments", "id": "uuid" } | null }
 ```
 
-The app speaks `speak`, plays `haptic`, and listens again if status is `question` / `confirm`. The saved record reaches the device via PowerSync; `record` lets the app show it immediately.
+The app speaks `speak`, plays `haptic`, and listens again if status is `question` / `confirm` / `not_understood`. `cancelled` uses the `not_understood` haptic. Replying to a finished thread returns its final turn again (safe retry of "da"). The saved record reaches the device via PowerSync; `record` lets the app show it immediately.
 
 ### 8.4 Offline voice notes
 
-When offline, the device saves a `voice_notes` row (`status = pending`). After reconnect it syncs up; the app calls `/v1/voice/notes/{id}/process`, which starts a session with that transcript and the stored context. Confirmation still happens with the user — **never auto-save a voice note without confirmation.**
+When offline, the device saves a `voice_notes` row (`status = pending`). After reconnect it syncs up; the app calls `/v1/voice/notes/{id}/process`, which starts a session with that transcript and the stored context (calling it again re-asks the pending question). The server updates the note's `status` (`needs_answer` / `needs_confirmation` / `saved` / `cancelled`), `thread_id` and `result_record_*`, which sync back down. Confirmation still happens with the user — **never auto-save a voice note without confirmation.**
 
 ---
 
@@ -415,7 +431,7 @@ When offline, the device saves a `voice_notes` row (`status = pending`). After r
 | RLS | SQL tests (or pytest) proving user A cannot read/write user B's rows. Required for every new table. |
 | Sync upload | Replay the same batch twice → one row. Older `client_updated_at` → conflict row, server data kept. Invalid op → `rejected`, others applied. |
 | API | `httpx.AsyncClient` with a forged test JWT (test signing key). |
-| Assistant | Fake LLM returning fixed structured outputs; test graph paths: happy path, missing amount → ask → answer, "no" → correction, ambiguous hive, not understood. Optional small eval set of real transcripts (e.g. "15" vs "50"). |
+| Assistant | `ScriptedExtractor` (tests/voice_helpers.py) instead of Groq; graph turns round-trip through JSON like `voice_sessions`; `--db` runs it end to end; `--groq` (opt-in) sends real Romanian/English sentences to Groq; test graph paths: happy path, missing amount → ask → answer, "no" → correction, ambiguous hive, not understood. Optional small eval set of real transcripts (e.g. "15" vs "50"). |
 
 Rule: **no new service function without a test**; no new table without an RLS test.
 
@@ -441,7 +457,7 @@ Optional local stack: install Docker, `npx supabase start`, `npx supabase db res
 
 **Deployment: Vercel.** FastAPI runs as a Vercel Python serverless function (project Root Directory = `backend`, entrypoint `app/main.py:app`). Because functions are short-lived:
 - `DATABASE_URL` = Supabase **pooler** URL (port 6543, transaction mode) and `DB_SERVERLESS=true` → `NullPool`, prepared statements off (see `app/db.py`).
-- Keep requests short. The voice assistant (phase 4) must fit Vercel's function time limit; LangGraph state lives in Postgres, so each request is independent.
+- Keep requests short. A voice turn is one Groq call; state lives in `voice_sessions`, so each request is independent.
 - Env vars are set in the Vercel project settings, never committed.
 
 Environments: `dev` (hosted Supabase + Vercel preview), `prod` (later). Config differs only by env vars.
@@ -453,9 +469,9 @@ Environments: `dev` (hosted Supabase + Vercel preview), `prod` (later). Config d
 | Phase | Backend deliverables | Done when |
 | --- | --- | --- |
 | **1 · Apiaries & colonies** | Supabase project, migrations for `profiles`, `apiaries`, `colonies`, `colony_placements` + RLS; JWT verification; `/health`, `/v1/me`; sync rules for those tables; `sync/upload` for them; move service | A colony moved between sites shows both placements in its history. |
-| **2 · Field records** | Migrations + services for `treatments`, `harvests`, `inventory_items`, `inventory_adjustments`, `colony_notes`; sync rules; upload support | A treatment recorded from a colony screen lands correctly with colony + apiary. |
+| **2 · Field records** (backend built) | Migrations + services for `treatments`, `harvests`, `inventory_items`, `inventory_adjustments`, `colony_notes`; sync rules; upload support | A treatment recorded from a colony screen lands correctly with colony + apiary. |
 | **3 · Offline field testing** | Hardened upsert (idempotency, LWW, savepoints), `sync_conflicts` + review endpoints, rejected-op reporting | Harvest in airplane mode → restart → reconnect → **exactly one** server row. |
-| **4 · Voice assistant** | LangGraph graph, checkpointer, voice endpoints, `voice_notes` processing, prompts, tests | Treatment said with missing amount → one follow-up → confirm → correct record. |
+| **4 · Voice assistant** (backend built) | LangGraph graph, checkpointer, voice endpoints, `voice_notes` processing, prompts, tests | Treatment said with missing amount → one follow-up → confirm → correct record. |
 | **5 · Assistant extras** | History Q&A ("what did I do to hive 12 last month?") as read-only tools; treatment reminders | Correct date and product read back for a colony's last treatment. |
 | **Later** | Photo analysis (frames, varroa counts) | TBD |
 
@@ -489,4 +505,10 @@ Add a line whenever a rule above changes or a non-obvious choice is made.
 | 2026-11-19 | Server resolves overlapping open placements (`services/colonies.py`): a later placement wins; server-side closes bump `client_updated_at` to now. | Two offline devices can move the same colony. |
 | 2026-11-19 | `sync_conflicts` ids are server-generated; the table is not synced to devices yet. | Written by the API, not by devices. |
 | 2026-11-19 | LangChain/LangGraph deps are added in phase 4, not now. | Don't build ahead of the phase; keeps the serverless bundle small. |
+| 2026-11-25 | **Groq replaces Claude** for the assistant: `openai/gpt-oss-20b` (strict JSON schema) for extraction, `whisper-large-v3-turbo` for speech-to-text. | User's choice: free tier. Model ids are config, so swapping is an env change. |
+| 2026-11-25 | Phase 2 record tables (treatments, harvests, inventory, colony notes) built together with voice. | Voice saves those records; they had to exist first. |
+| 2026-11-25 | LangGraph threads stored in our own `voice_sessions` table via `ThreadStore`, not langgraph-checkpoint-postgres. | Same transaction as the saved record; no psycopg/pooler/prepared-statement issues; schema stays migration-owned; table is server-only. |
+| 2026-11-25 | Assistant speaks English and Romanian; templated messages per language, rules-based yes/no. | User requirement: it must understand Romanian. |
+| 2026-11-25 | Voice inventory supports `purchase` and `used` only; `moved`/`correction` stay in typed forms. | Moves need two sites; corrections need the current stock — too error-prone by voice. |
+| 2026-11-25 | Units are never converted; mismatches ask or skip the stock change. | Stock is a plain sum per item. |
 | 2026-11-19 | `profiles.default_units` dropped for now. | Not needed until phase 2 forms; add with a migration then. |

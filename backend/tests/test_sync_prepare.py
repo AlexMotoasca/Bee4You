@@ -122,3 +122,38 @@ def test_profile_only_own_and_no_delete(user: CurrentUser) -> None:
 def test_delete_needs_no_data(user: CurrentUser) -> None:
     p = prepare_op(op("DELETE", "colonies"), user)
     assert p.values == {}
+
+
+def test_treatment_needs_positive_amount_and_known_unit(user: CurrentUser) -> None:
+    base = {
+        "colony_id": str(uuid.uuid4()),
+        "apiary_id": str(uuid.uuid4()),
+        "product_name": "Oxalic acid",
+        "amount": 5,
+        "unit": "ml",
+        "treated_at": NOW,
+        "client_updated_at": NOW,
+    }
+    p = prepare_op(op("PUT", "treatments", base), user)
+    assert p.values["source"] == "manual"
+    with pytest.raises(OpRejected, match="amount"):
+        prepare_op(op("PUT", "treatments", {**base, "amount": 0}), user)
+    with pytest.raises(OpRejected, match="unit"):
+        prepare_op(op("PUT", "treatments", {**base, "unit": "spoons"}), user)
+
+
+def test_empty_colony_note_rejected(user: CurrentUser) -> None:
+    data = {
+        "colony_id": str(uuid.uuid4()),
+        "apiary_id": str(uuid.uuid4()),
+        "noted_at": NOW,
+        "client_updated_at": NOW,
+    }
+    with pytest.raises(OpRejected, match="note needs"):
+        prepare_op(op("PUT", "colony_notes", data), user)
+
+
+def test_voice_note_from_device(user: CurrentUser) -> None:
+    data = {"transcript": "Stupul 12, acid oxalic", "locale": "ro-RO", "client_updated_at": NOW}
+    p = prepare_op(op("PUT", "voice_notes", data), user)
+    assert p.values["status"] == "pending"
